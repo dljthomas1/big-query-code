@@ -1,0 +1,78 @@
+# General code used for segmentations.
+
+# 1.0 Work out the dates each individual user visited the website.
+
+WITH base AS(
+SELECT 
+  fullvisitorid, 
+  device.browser, 
+  device.deviceCategory, 
+  geoNetwork.country,
+  MIN(date) AS init_date,
+  MIN(EXTRACT(ISOWEEK FROM PARSE_DATE("%Y%m%d", date))) init_week,
+  ARRAY_AGG(DISTINCT EXTRACT(ISOWEEK FROM PARSE_DATE("%Y%m%d", date))) weeks,
+FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+WHERE _TABLE_SUFFIX BETWEEN "20170101" AND "20170801"
+GROUP BY fullvisitorid, device.browser, device.deviceCategory, geoNetwork.country),
+
+# Calculate how many weeks after the initial visit all subsequent visits were
+
+week_diffs AS (SELECT
+  init_date,
+  init_week, # Might not need this
+  ARRAY(
+    SELECT (weeks - init_week) as dt
+    FROM UNNEST(weeks) weeks
+  ) data,
+  browser, deviceCategory, country
+FROM base),
+
+# Find any records where the user revisited a week or more later than the original visit.
+
+weeks_past_zero AS (
+SELECT init_date, COUNT(revisit) as freq, browser, deviceCategory, country
+FROM(
+  SELECT *, TRUE as revisit
+  FROM week_diffs
+  base, UNNEST (data) week
+  WHERE week > 0 AND week < 5)
+GROUP BY init_date, browser, deviceCategory, country),
+
+ub AS # UB = User Breakdown
+(SELECT
+  date,
+  COUNT (DISTINCT fullVisitorId) AS UniqueVisitors,
+  browser,
+  deviceCategory,
+  country
+FROM( # Get all first visits as indication of visitor IDs
+  SELECT 
+    fullvisitorid, 
+    min(date) as date,
+    device.browser, 
+    device.deviceCategory, 
+    geoNetwork.country,
+  FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+  WHERE _TABLE_SUFFIX BETWEEN "20170101" AND "20170801"
+  GROUP BY fullvisitorid, device.browser, device.deviceCategory, geoNetwork.country)
+GROUP BY date, browser, deviceCategory, country),
+
+# Group together into a format that works for GA
+
+final_table AS (SELECT *
+FROM ub
+LEFT JOIN (
+  SELECT init_date, freq, browser AS f_browser, deviceCategory AS f_device, country AS f_country
+  FROM weeks_past_zero
+) as weeks_past_zero
+ON 
+  date = weeks_past_zero.init_date AND 
+  browser = f_browser AND 
+  deviceCategory = f_device AND
+  country = f_country)
+  
+SELECT * FROM final_table
+
+
+
+
