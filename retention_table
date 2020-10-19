@@ -1,0 +1,62 @@
+# Code for Retention Table
+
+# 1.0 Group visits by user so we can later work out how many subsequent visits a user makes.
+
+WITH base AS(
+SELECT 
+  fullvisitorid, device.browser, device.deviceCategory, geoNetwork.country,
+  MIN(EXTRACT(ISOWEEK FROM PARSE_DATE("%Y%m%d", date))) init_week,
+  ARRAY_AGG(DISTINCT EXTRACT(ISOWEEK FROM PARSE_DATE("%Y%m%d", date))) weeks,
+FROM `bigquery-public-data.google_analytics_sample.ga_sessions_*`
+WHERE _TABLE_SUFFIX BETWEEN "20170101" AND "20170801"
+GROUP BY fullvisitorid, device.browser, device.deviceCategory, geoNetwork.country),
+
+# 2.0 Calculate the difference between the initial visit date and all subsequent visit dates
+
+week_diffs AS (SELECT
+  init_week,
+  ARRAY(
+    SELECT (weeks - init_week) as dt
+    FROM UNNEST(weeks) weeks
+  ) data,
+  browser, deviceCategory, country
+FROM base),
+
+# Group into weeks (rather than initial date)
+
+week_table AS 
+(SELECT
+  init_week,
+  data AS weeks,
+  COUNT(data) AS freq,
+  browser, deviceCategory, country
+FROM
+  week_diffs, UNNEST (data) data
+GROUP BY init_week, 
+  weeks, browser, deviceCategory, country),
+
+# Prepare data above in a structure that works for Google Data Studio
+  
+final_table AS
+(SELECT 
+  init_week,
+  ARRAY_AGG(STRUCT(weeks, freq)) data,
+  browser, deviceCategory, country
+FROM week_table
+GROUP BY init_week, browser, deviceCategory, country),
+
+# Get the total unique visitor during the first week for later calculations in data studio
+
+orig_figure AS (
+SELECT init_week, SUM(freq) as week_0_figure,
+FROM week_table
+WHERE weeks = 0
+GROUP BY init_week)
+
+# Join the above to the final table ready for Google Data Studio
+
+SELECT * 
+FROM final_table
+JOIN (SELECT week_0_figure, init_week AS week0 FROM orig_figure) as wk1 ON wk1.week0 = final_table.init_week
+
+
